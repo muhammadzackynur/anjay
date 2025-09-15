@@ -10,27 +10,27 @@ class ProductController extends Controller
 {
     /**
      * Display a listing of the resource.
+     * --- SUDAH DIPERBAIKI ---
      */
     public function index()
     {
-        $products = Product::all();
+        // Gunakan `with('images')` untuk mengambil data produk BESERTA gambar-gambarnya
+        $products = Product::with('images')->latest()->get();
         return response()->json($products);
     }
 
     /**
      * Store a newly created resource in storage.
+     * (Method ini tidak perlu diubah untuk masalah gambar)
      */
     public function store(Request $request)
     {
-        // Validasi data yang masuk
         $validatedData = $request->validate([
             'name' => 'required|string|max:255',
             'description' => 'required|string',
             'price' => 'required|numeric|min:0',
-            'image_url' => 'nullable|url',
         ]);
 
-        // Buat produk baru
         $product = Product::create($validatedData);
 
         return response()->json($product, 201);
@@ -38,31 +38,30 @@ class ProductController extends Controller
 
     /**
      * Display the specified resource.
+     * --- SUDAH DIPERBAIKI ---
      */
     public function show($id)
     {
-        $product = Product::findOrFail($id);
+        // Gunakan `with('images')` juga di sini untuk detail produk
+        $product = Product::with('images')->findOrFail($id);
         return response()->json($product);
     }
 
+    // ... sisa method (update, destroy) tidak perlu diubah ...
+    
     /**
      * Update the specified resource in storage.
-     * --- METHOD BARU UNTUK UPDATE PRODUK ---
      */
     public function update(Request $request, $id)
     {
-        // Cari produk berdasarkan ID
         $product = Product::findOrFail($id);
 
-        // Validasi data yang masuk
         $validatedData = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'description' => 'sometimes|required|string',
             'price' => 'sometimes|required|numeric|min:0',
-            'image_url' => 'nullable|url',
         ]);
 
-        // Update data produk
         $product->update($validatedData);
 
         return response()->json($product);
@@ -70,18 +69,11 @@ class ProductController extends Controller
 
     /**
      * Remove the specified resource from storage.
-     * --- METHOD BARU UNTUK HAPUS PRODUK ---
      */
     public function destroy($id)
     {
-        // Cari produk berdasarkan ID
         $product = Product::findOrFail($id);
-
-        // Hapus produk
         $product->delete();
-
-        // Kembalikan response sukses tanpa data (status 204 No Content)
-        // atau dengan pesan JSON
         return response()->json(['message' => 'Product successfully deleted.']);
     }
 }

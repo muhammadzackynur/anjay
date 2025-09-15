@@ -14,13 +14,33 @@ class Product extends Model
      *
      * @var array<int, string>
      */
-    // --- TAMBAHKAN BAGIAN INI ---
     protected $fillable = [
-    'name',
-    'description',
-    'price',
-    'category', // <-- TAMBAHKAN INI
-    'image',
+        'name',
+        'description',
+        'price',
+        'category',
+        // 'image', // <-- Kolom ini dihapus karena kita pakai relasi
+        'warna',
+        'penyimpanan',
     ];
-    // ---------------------------
+
+    /**
+     * The attributes that should be cast.
+     *
+     * @var array
+     */
+    protected $casts = [
+        'warna' => 'array',
+        'penyimpanan' => 'array',
+    ];
+
+    /**
+     * Mendefinisikan relasi one-to-many ke model ProductImage.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
+    public function images()
+    {
+        return $this->hasMany(ProductImage::class);
+    }
 }
