@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
@@ -14,7 +15,6 @@ const String host = kIsWeb ? '127.0.0.1' : '10.0.2.2';
 const String baseUrl = 'http://$host:8000';
 
 // --- MODEL-MODEL DATA ---
-
 class User {
   final int id;
   final String name;
@@ -33,12 +33,25 @@ class User {
     if (json['profile_photo_path'] != null) {
       photoUrl = '$baseUrl/storage/${json['profile_photo_path']}';
     }
-
     return User(
       id: json['id'],
       name: json['name'],
       email: json['email'],
       profilePhotoUrl: photoUrl,
+    );
+  }
+}
+
+class ProductImage {
+  final int id;
+  final String imageUrl;
+
+  ProductImage({required this.id, required this.imageUrl});
+
+  factory ProductImage.fromJson(Map<String, dynamic> json) {
+    return ProductImage(
+      id: json['id'],
+      imageUrl: '$baseUrl/storage/${json['image']}',
     );
   }
 }
@@ -49,9 +62,11 @@ class Product {
   final String description;
   final double price;
   final String? category;
-  final String? imageUrl;
+  final List<ProductImage> images;
   final List<String> warna;
   final List<String> penyimpanan;
+
+  String? get firstImageUrl => images.isNotEmpty ? images.first.imageUrl : null;
 
   Product({
     required this.id,
@@ -59,28 +74,31 @@ class Product {
     required this.description,
     required this.price,
     this.category,
-    this.imageUrl,
+    required this.images,
     required this.warna,
     required this.penyimpanan,
   });
 
-  // --- PERBAIKAN DI SINI ---
   factory Product.fromJson(Map<String, dynamic> json) {
-    // Fungsi bantuan untuk mem-parsing data yang bisa berupa String atau List
-    List<String> _parseOptions(dynamic data) {
-      if (data == null) {
-        return []; // Kembalikan list kosong jika data null
-      }
+    List<String> parseJsonArray(dynamic data) {
+      if (data is List) return data.map((item) => item.toString()).toList();
       if (data is String) {
-        // Jika data adalah String, pisahkan berdasarkan baris baru
-        // dan hapus spasi kosong di awal/akhir setiap item.
-        return data.split('\n').map((item) => item.trim()).toList();
+        return data
+            .split('\n')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
       }
+      return [];
+    }
+
+    List<ProductImage> parseImages(dynamic data) {
       if (data is List) {
-        // Jika sudah berupa List, pastikan semua elemen adalah String
-        return data.map((item) => item.toString()).toList();
+        return data
+            .map((imageData) => ProductImage.fromJson(imageData))
+            .toList();
       }
-      return []; // Kembalikan list kosong untuk tipe data lain
+      return [];
     }
 
     return Product(
@@ -89,11 +107,9 @@ class Product {
       description: json['description'] ?? 'No Description',
       price: double.tryParse(json['price']?.toString() ?? '0.0') ?? 0.0,
       category: json['category'],
-      imageUrl: json['image'] != null
-          ? '$baseUrl/storage/${json['image']}'
-          : null,
-      warna: _parseOptions(json['warna']), // Gunakan fungsi bantuan
-      penyimpanan: _parseOptions(json['penyimpanan']), // Gunakan fungsi bantuan
+      images: parseImages(json['images']),
+      warna: parseJsonArray(json['warna']),
+      penyimpanan: parseJsonArray(json['penyimpanan']),
     );
   }
 }
@@ -159,17 +175,22 @@ class Order {
   }
 }
 
-// --- STATE MANAGEMENT (PROVIDER) ---
-
+// --- STATE MANAGEMENT ---
 class AuthProvider with ChangeNotifier {
   String? _token;
   User? _user;
   String? _uploadError;
+  String _authError = '';
 
   String? get token => _token;
   User? get user => _user;
   String? get uploadError => _uploadError;
+  String get authError => _authError;
   bool get isLoggedIn => _token != null;
+
+  void _clearAuthError() {
+    _authError = '';
+  }
 
   void _clearUploadError() {
     _uploadError = null;
@@ -188,6 +209,7 @@ class AuthProvider with ChangeNotifier {
   }
 
   Future<bool> login(String email, String password) async {
+    _clearAuthError();
     final url = Uri.parse('$baseUrl/api/login');
     try {
       final response = await http.post(
@@ -197,9 +219,12 @@ class AuthProvider with ChangeNotifier {
       if (response.statusCode == 200) {
         await _processAuthResponse(json.decode(response.body));
         return true;
+      } else {
+        _authError = "Login Gagal! Periksa kembali email dan password Anda.";
+        return false;
       }
-      return false;
     } catch (e) {
+      _authError = "Gagal terhubung ke server. Periksa koneksi Anda.";
       return false;
     }
   }
@@ -210,6 +235,7 @@ class AuthProvider with ChangeNotifier {
     String password,
     String passwordConfirmation,
   ) async {
+    _clearAuthError();
     final url = Uri.parse('$baseUrl/api/register');
     try {
       final response = await http.post(
@@ -221,12 +247,25 @@ class AuthProvider with ChangeNotifier {
           'password_confirmation': passwordConfirmation,
         },
       );
+
+      final responseData = json.decode(response.body);
+
       if (response.statusCode == 201) {
-        await _processAuthResponse(json.decode(response.body));
+        await _processAuthResponse(responseData);
         return true;
+      } else {
+        if (responseData['errors'] != null) {
+          _authError = responseData['errors'].values.first[0];
+        } else {
+          _authError =
+              responseData['message'] ?? 'Terjadi kesalahan tidak diketahui.';
+        }
+        print("Error Registrasi: $_authError");
+        return false;
       }
-      return false;
     } catch (e) {
+      _authError = "Gagal terhubung ke server. Periksa koneksi Anda.";
+      print("Exception saat register: $e");
       return false;
     }
   }
@@ -256,7 +295,7 @@ class AuthProvider with ChangeNotifier {
           await logout();
         }
       } catch (e) {
-        /* Gagal, biarkan user null */
+        await logout();
       }
     }
     notifyListeners();
@@ -271,12 +310,10 @@ class AuthProvider with ChangeNotifier {
 
     final url = Uri.parse('$baseUrl/api/user/photo');
     try {
-      final request = http.MultipartRequest('POST', url);
-      request.headers['Authorization'] = 'Bearer $_token';
-      request.headers['Accept'] = 'application/json';
-      request.files.add(
-        await http.MultipartFile.fromPath('photo', imageFile.path),
-      );
+      final request = http.MultipartRequest('POST', url)
+        ..headers['Authorization'] = 'Bearer $_token'
+        ..headers['Accept'] = 'application/json'
+        ..files.add(await http.MultipartFile.fromPath('photo', imageFile.path));
 
       final response = await request.send();
       final responseBody = await response.stream.bytesToString();
@@ -437,6 +474,8 @@ class Cart with ChangeNotifier {
   }
 }
 
+// --- UI WIDGETS ---
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('id_ID', null);
@@ -460,16 +499,22 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Simple E-Commerce',
+      title: 'Toko Kami',
       theme: ThemeData(
-        primarySwatch: Colors.teal,
-        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
-        fontFamily: 'Poppins',
+        primarySwatch: Colors.grey,
+        scaffoldBackgroundColor: Colors.white,
+        fontFamily: 'Lora',
         appBarTheme: const AppBarTheme(
           backgroundColor: Colors.white,
           foregroundColor: Colors.black,
-          elevation: 1,
+          elevation: 0,
           centerTitle: true,
+        ),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: Colors.white,
+          selectedItemColor: Colors.black,
+          unselectedItemColor: Colors.grey,
+          elevation: 0,
         ),
       ),
       home: const HomePage(),
@@ -540,8 +585,6 @@ class _MainPageState extends State<MainPage> {
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,
-        selectedItemColor: Colors.teal,
-        unselectedItemColor: Colors.grey,
         items: const <BottomNavigationBarItem>[
           BottomNavigationBarItem(
             icon: Icon(Icons.store_outlined),
@@ -549,8 +592,8 @@ class _MainPageState extends State<MainPage> {
             label: 'Toko',
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.history_outlined),
-            activeIcon: Icon(Icons.history),
+            icon: Icon(Icons.receipt_long_outlined),
+            activeIcon: Icon(Icons.receipt_long),
             label: 'Pesanan',
           ),
           BottomNavigationBarItem(
@@ -564,186 +607,7 @@ class _MainPageState extends State<MainPage> {
   }
 }
 
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends State<LoginPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  bool _isLoading = false;
-
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isLoading = true);
-    bool success = await Provider.of<AuthProvider>(
-      context,
-      listen: false,
-    ).login(_emailController.text, _passwordController.text);
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-    if (!success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Login Gagal! Periksa kembali email dan password Anda.',
-          ),
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Login')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                TextFormField(
-                  controller: _emailController,
-                  decoration: const InputDecoration(labelText: 'Email'),
-                  keyboardType: TextInputType.emailAddress,
-                  validator: (value) => value == null || value.isEmpty
-                      ? 'Email tidak boleh kosong'
-                      : null,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _passwordController,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                  obscureText: true,
-                  validator: (value) => value == null || value.isEmpty
-                      ? 'Password tidak boleh kosong'
-                      : null,
-                ),
-                const SizedBox(height: 24),
-                _isLoading
-                    ? const CircularProgressIndicator()
-                    : ElevatedButton(
-                        onPressed: _submit,
-                        child: const Text('Login'),
-                      ),
-                TextButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(builder: (ctx) => const RegisterPage()),
-                  ),
-                  child: const Text('Belum punya akun? Daftar di sini'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class RegisterPage extends StatefulWidget {
-  const RegisterPage({super.key});
-  @override
-  State<RegisterPage> createState() => _RegisterPageState();
-}
-
-class _RegisterPageState extends State<RegisterPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _passwordConfirmController = TextEditingController();
-  bool _isLoading = false;
-
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-    setState(() => _isLoading = true);
-    bool success = await Provider.of<AuthProvider>(context, listen: false)
-        .register(
-          _nameController.text,
-          _emailController.text,
-          _passwordController.text,
-          _passwordConfirmController.text,
-        );
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-    if (success) {
-      Navigator.of(context).pop();
-    } else {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Registrasi Gagal!')));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Daftar Akun Baru')),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16.0),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              children: [
-                TextFormField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(labelText: 'Nama Lengkap'),
-                  validator: (value) => value == null || value.isEmpty
-                      ? 'Nama tidak boleh kosong'
-                      : null,
-                ),
-                TextFormField(
-                  controller: _emailController,
-                  decoration: const InputDecoration(labelText: 'Email'),
-                  keyboardType: TextInputType.emailAddress,
-                  validator: (value) => value == null || value.isEmpty
-                      ? 'Email tidak boleh kosong'
-                      : null,
-                ),
-                TextFormField(
-                  controller: _passwordController,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                  obscureText: true,
-                  validator: (value) => (value?.length ?? 0) < 8
-                      ? 'Password minimal 8 karakter'
-                      : null,
-                ),
-                TextFormField(
-                  controller: _passwordConfirmController,
-                  decoration: const InputDecoration(
-                    labelText: 'Konfirmasi Password',
-                  ),
-                  obscureText: true,
-                  validator: (value) => value != _passwordController.text
-                      ? 'Password tidak cocok'
-                      : null,
-                ),
-                const SizedBox(height: 24),
-                _isLoading
-                    ? const CircularProgressIndicator()
-                    : ElevatedButton(
-                        onPressed: _submit,
-                        child: const Text('Daftar'),
-                      ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// --- PRODUCT LIST PAGE DENGAN FILTER DI APPBAR ---
+// --- HALAMAN UTAMA / TOKO (UI BARU) ---
 class ProductListPage extends StatefulWidget {
   const ProductListPage({super.key});
   @override
@@ -800,7 +664,9 @@ class _ProductListPageState extends State<ProductListPage> {
       } else {
         _filteredProducts = _allProducts
             .where(
-              (product) => product.category?.toUpperCase() == _selectedCategory,
+              (product) =>
+                  product.category?.toUpperCase() ==
+                  _selectedCategory.toUpperCase(),
             )
             .toList();
       }
@@ -811,40 +677,15 @@ class _ProductListPageState extends State<ProductListPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          children: [
-            const Text(
-              'Toko Kami',
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
-            ),
-            Text(
-              'Kategori: $_selectedCategory',
-              style: const TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.normal,
-              ),
-            ),
-          ],
+        title: const Text(
+          'Toko Kami',
+          style: TextStyle(fontWeight: FontWeight.bold),
         ),
         actions: [
-          // --- TOMBOL FILTER BARU: POPUP MENU ---
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.filter_list),
-            tooltip: 'Filter Kategori',
-            onSelected: (String newValue) {
-              setState(() {
-                _selectedCategory = newValue;
-                _filterProducts();
-              });
-            },
-            itemBuilder: (BuildContext context) {
-              return _categories.map((String category) {
-                return PopupMenuItem<String>(
-                  value: category,
-                  child: Text(category),
-                );
-              }).toList();
-            },
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Cari',
+            onPressed: () {},
           ),
           Consumer<Cart>(
             builder: (context, cart, child) => Badge(
@@ -857,46 +698,298 @@ class _ProductListPageState extends State<ProductListPage> {
               ),
             ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: FutureBuilder<List<Product>>(
-        future: _productsFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          } else if (snapshot.hasError) {
-            return Center(child: Text('Error: ${snapshot.error}'));
-          } else if (_allProducts.isEmpty) {
-            return const Center(child: Text('Tidak ada produk yang tersedia.'));
-          } else {
-            return RefreshIndicator(
-              onRefresh: () async {
-                setState(() {
-                  _allProducts.clear();
-                  _productsFuture = fetchProducts();
-                });
-              },
-              child: _filteredProducts.isEmpty
-                  ? Center(
-                      child: Text(
-                        'Tidak ada produk di kategori "$_selectedCategory".',
+      body: RefreshIndicator(
+        onRefresh: () async {
+          setState(() {
+            _productsFuture = fetchProducts();
+          });
+        },
+        child: CustomScrollView(
+          slivers: [
+            SliverToBoxAdapter(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CategoryFilter(
+                    categories: _categories,
+                    selectedCategory: _selectedCategory,
+                    onCategorySelected: (category) {
+                      setState(() {
+                        _selectedCategory = category;
+                        _filterProducts();
+                      });
+                    },
+                  ),
+                  const ImageCarousel(),
+                ],
+              ),
+            ),
+
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16.0,
+                vertical: 24.0,
+              ),
+              sliver: FutureBuilder<List<Product>>(
+                future: _productsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const SliverFillRemaining(
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  } else if (snapshot.hasError) {
+                    return SliverFillRemaining(
+                      child: Center(child: Text('Error: ${snapshot.error}')),
+                    );
+                  } else if (_allProducts.isEmpty) {
+                    return const SliverFillRemaining(
+                      child: Center(child: Text('Tidak ada produk.')),
+                    );
+                  } else if (_filteredProducts.isEmpty) {
+                    return SliverFillRemaining(
+                      child: Center(
+                        child: Text(
+                          'Tidak ada produk di kategori "$_selectedCategory".',
+                        ),
                       ),
-                    )
-                  : GridView.builder(
-                      padding: const EdgeInsets.all(12.0),
+                    );
+                  } else {
+                    return SliverGrid(
                       gridDelegate:
                           const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 2,
-                            crossAxisSpacing: 12.0,
-                            mainAxisSpacing: 12.0,
-                            childAspectRatio: 0.7,
+                            crossAxisSpacing: 16.0,
+                            mainAxisSpacing: 16.0,
+                            childAspectRatio: 0.75,
                           ),
-                      itemCount: _filteredProducts.length,
-                      itemBuilder: (context, index) =>
-                          ProductCard(product: _filteredProducts[index]),
-                    ),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) =>
+                            ProductCard(product: _filteredProducts[index]),
+                        childCount: _filteredProducts.length,
+                      ),
+                    );
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// WIDGET BARU: ImageCarousel yang dinamis dari Backend
+class ImageCarousel extends StatefulWidget {
+  const ImageCarousel({super.key});
+
+  @override
+  State<ImageCarousel> createState() => _ImageCarouselState();
+}
+
+class _ImageCarouselState extends State<ImageCarousel> {
+  final PageController _pageController = PageController();
+  int _currentPage = 0;
+  Timer? _timer;
+
+  late Future<List<String>> _bannerImagesFuture;
+  List<String> _bannerImages = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _bannerImagesFuture = _fetchBannerImages();
+  }
+
+  Future<List<String>> _fetchBannerImages() async {
+    try {
+      final response = await http.get(Uri.parse('$baseUrl/api/products'));
+      if (response.statusCode == 200) {
+        final List<dynamic> productsJson = json.decode(response.body);
+        final List<Product> products = productsJson
+            .map((json) => Product.fromJson(json))
+            .toList();
+        final imageUrls = products
+            .where((p) => p.firstImageUrl != null)
+            .take(5)
+            .map((p) => p.firstImageUrl!)
+            .toList();
+        if (mounted) {
+          setState(() {
+            _bannerImages = imageUrls;
+          });
+          _startAutoScroll();
+        }
+        return imageUrls;
+      } else {
+        throw Exception('Gagal memuat banner');
+      }
+    } catch (e) {
+      print('Error fetching banner images: $e');
+      return [];
+    }
+  }
+
+  void _startAutoScroll() {
+    if (_bannerImages.length > 1) {
+      _timer = Timer.periodic(const Duration(seconds: 5), (Timer timer) {
+        if (_currentPage < _bannerImages.length - 1) {
+          _currentPage++;
+        } else {
+          _currentPage = 0;
+        }
+
+        if (_pageController.hasClients) {
+          _pageController.animateToPage(
+            _currentPage,
+            duration: const Duration(milliseconds: 350),
+            curve: Curves.easeIn,
+          );
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16.0, 0, 16.0, 16.0),
+      child: FutureBuilder<List<String>>(
+        future: _bannerImagesFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(12.0),
+                ),
+                child: const Center(child: CircularProgressIndicator()),
+              ),
             );
           }
+
+          if (snapshot.hasError ||
+              !snapshot.hasData ||
+              snapshot.data!.isEmpty) {
+            return AspectRatio(
+              aspectRatio: 16 / 9,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.grey[200],
+                  borderRadius: BorderRadius.circular(12.0),
+                ),
+                child: const Center(child: Text('Gagal memuat banner')),
+              ),
+            );
+          }
+
+          final images = snapshot.data!;
+          return Column(
+            children: [
+              AspectRatio(
+                aspectRatio: 16 / 9,
+                child: PageView.builder(
+                  controller: _pageController,
+                  itemCount: images.length,
+                  onPageChanged: (index) {
+                    setState(() {
+                      _currentPage = index;
+                    });
+                  },
+                  itemBuilder: (context, index) {
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(12.0),
+                      child: Image.network(
+                        images[index],
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Icon(Icons.error, color: Colors.red);
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (images.length > 1) ...[
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(images.length, (index) {
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      margin: const EdgeInsets.symmetric(horizontal: 4.0),
+                      height: 8.0,
+                      width: _currentPage == index ? 24.0 : 8.0,
+                      decoration: BoxDecoration(
+                        color: _currentPage == index
+                            ? Colors.black
+                            : Colors.grey[300],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    );
+                  }),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class CategoryFilter extends StatelessWidget {
+  final List<String> categories;
+  final String selectedCategory;
+  final Function(String) onCategorySelected;
+
+  const CategoryFilter({
+    super.key,
+    required this.categories,
+    required this.selectedCategory,
+    required this.onCategorySelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 60, // Tambah tinggi agar tidak terlalu mepet
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        itemCount: categories.length,
+        padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 10),
+        itemBuilder: (context, index) {
+          final category = categories[index];
+          final isSelected = category == selectedCategory;
+          return Padding(
+            padding: const EdgeInsets.only(right: 8.0),
+            child: TextButton(
+              onPressed: () => onCategorySelected(category),
+              style: TextButton.styleFrom(
+                foregroundColor: isSelected ? Colors.black : Colors.grey[600],
+                padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              ),
+              child: Text(
+                category,
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          );
         },
       ),
     );
@@ -914,72 +1007,252 @@ class ProductCard extends StatelessWidget {
       symbol: 'Rp ',
       decimalDigits: 0,
     );
-    return Card(
-      elevation: 2,
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        onTap: () => Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => ProductDetailPage(product: product),
-          ),
+    return InkWell(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ProductDetailPage(product: product),
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              child: Container(
-                color: Colors.white,
-                child: product.imageUrl != null && product.imageUrl!.isNotEmpty
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[200],
+                borderRadius: BorderRadius.circular(12.0),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12.0),
+                child: product.firstImageUrl != null
                     ? Image.network(
-                        product.imageUrl!,
+                        product.firstImageUrl!,
                         fit: BoxFit.cover,
-                        loadingBuilder: (context, child, loadingProgress) =>
-                            loadingProgress == null
-                            ? child
-                            : const Center(child: CircularProgressIndicator()),
-                        errorBuilder: (context, error, stackTrace) =>
-                            const Icon(
-                              Icons.broken_image_outlined,
-                              size: 50,
-                              color: Colors.grey,
-                            ),
+                        width: double.infinity,
+                        errorBuilder: (context, error, stackTrace) {
+                          print(
+                            "GAGAL LOAD GAMBAR: ${product.firstImageUrl} | Error: $error",
+                          );
+                          return const Icon(
+                            Icons.broken_image_outlined,
+                            color: Colors.grey,
+                          );
+                        },
                       )
-                    : const Icon(
-                        Icons.hide_image_outlined,
-                        size: 50,
-                        color: Colors.grey,
+                    : const Center(
+                        child: Icon(
+                          Icons.image_not_supported_outlined,
+                          color: Colors.grey,
+                        ),
                       ),
               ),
             ),
-            Padding(
-              padding: const EdgeInsets.all(10.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    product.name,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            product.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            formatCurrency.format(product.price),
+            style: TextStyle(fontSize: 14, color: Colors.grey[800]),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// --- SISA HALAMAN LAINNYA ---
+class LoginPage extends StatefulWidget {
+  const LoginPage({super.key});
+  @override
+  State<LoginPage> createState() => _LoginPageState();
+}
+
+class _LoginPageState extends State<LoginPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isLoading = true);
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    bool success = await auth.login(
+      _emailController.text,
+      _passwordController.text,
+    );
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+      if (!success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(auth.authError), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Login')),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                TextFormField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(labelText: 'Email'),
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) {
+                    if (value == null ||
+                        value.isEmpty ||
+                        !value.contains('@')) {
+                      return 'Masukkan email yang valid';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _passwordController,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                  obscureText: true,
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'Password tidak boleh kosong'
+                      : null,
+                ),
+                const SizedBox(height: 24),
+                _isLoading
+                    ? const CircularProgressIndicator()
+                    : ElevatedButton(
+                        onPressed: _submit,
+                        child: const Text('Login'),
+                      ),
+                TextButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (ctx) => const RegisterPage()),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    formatCurrency.format(product.price),
-                    style: TextStyle(
-                      color: Colors.teal.shade700,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 16,
-                    ),
-                  ),
-                ],
-              ),
+                  child: const Text('Belum punya akun? Daftar di sini'),
+                ),
+              ],
             ),
-          ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class RegisterPage extends StatefulWidget {
+  const RegisterPage({super.key});
+  @override
+  State<RegisterPage> createState() => _RegisterPageState();
+}
+
+class _RegisterPageState extends State<RegisterPage> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _passwordConfirmController = TextEditingController();
+  bool _isLoading = false;
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _isLoading = true);
+
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    bool success = await auth.register(
+      _nameController.text,
+      _emailController.text,
+      _passwordController.text,
+      _passwordConfirmController.text,
+    );
+
+    if (mounted) {
+      setState(() => _isLoading = false);
+      if (success) {
+        Navigator.of(context).pop();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(auth.authError), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Daftar Akun Baru')),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              children: [
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(labelText: 'Nama Lengkap'),
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'Nama tidak boleh kosong'
+                      : null,
+                ),
+                TextFormField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(labelText: 'Email'),
+                  keyboardType: TextInputType.emailAddress,
+                  validator: (value) {
+                    if (value == null ||
+                        value.isEmpty ||
+                        !value.contains('@')) {
+                      return 'Masukkan email yang valid';
+                    }
+                    return null;
+                  },
+                ),
+                TextFormField(
+                  controller: _passwordController,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                  obscureText: true,
+                  validator: (value) => (value?.length ?? 0) < 8
+                      ? 'Password minimal 8 karakter'
+                      : null,
+                ),
+                TextFormField(
+                  controller: _passwordConfirmController,
+                  decoration: const InputDecoration(
+                    labelText: 'Konfirmasi Password',
+                  ),
+                  obscureText: true,
+                  validator: (value) => value != _passwordController.text
+                      ? 'Password tidak cocok'
+                      : null,
+                ),
+                const SizedBox(height: 24),
+                _isLoading
+                    ? const CircularProgressIndicator()
+                    : ElevatedButton(
+                        onPressed: _submit,
+                        child: const Text('Daftar'),
+                      ),
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -1133,11 +1406,9 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
             Container(
               height: 300,
               color: Colors.white,
-              child:
-                  widget.product.imageUrl != null &&
-                      widget.product.imageUrl!.isNotEmpty
+              child: widget.product.firstImageUrl != null
                   ? Image.network(
-                      widget.product.imageUrl!,
+                      widget.product.firstImageUrl!,
                       fit: BoxFit.contain,
                       errorBuilder: (context, error, stackTrace) => const Icon(
                         Icons.broken_image_outlined,
@@ -1146,7 +1417,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                       ),
                     )
                   : const Icon(
-                      Icons.hide_image_outlined,
+                      Icons.image_not_supported_outlined,
                       size: 100,
                       color: Colors.grey,
                     ),
@@ -1175,13 +1446,11 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
                   ),
                   const SizedBox(height: 16),
                   const Divider(),
-
                   _buildOptionsSection('Pilihan Warna', widget.product.warna),
                   _buildOptionsSection(
                     'Pilihan Penyimpanan',
                     widget.product.penyimpanan,
                   ),
-
                   const SizedBox(height: 16),
                   const Text(
                     'Deskripsi Produk',
@@ -1339,12 +1608,12 @@ class _CartPageState extends State<CartPage> {
                     return Card(
                       child: ListTile(
                         leading: Image.network(
-                          cartItem.product.imageUrl ?? '',
+                          cartItem.product.firstImageUrl ?? '',
                           width: 70,
                           height: 70,
                           fit: BoxFit.cover,
                           errorBuilder: (_, __, ___) => const Icon(
-                            Icons.image,
+                            Icons.image_not_supported_outlined,
                             size: 70,
                             color: Colors.grey,
                           ),
@@ -1705,7 +1974,7 @@ class OrderCard extends StatelessWidget {
 
   Widget _buildOrderItemRow(OrderItem item, BuildContext context) {
     final productName = item.product?.name ?? '[Produk Dihapus]';
-    final productImageUrl = item.product?.imageUrl ?? '';
+    final productImageUrl = item.product?.firstImageUrl ?? '';
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 8.0),
@@ -1722,7 +1991,10 @@ class OrderCard extends StatelessWidget {
                 width: 50,
                 height: 50,
                 color: Colors.grey.shade200,
-                child: const Icon(Icons.image, color: Colors.grey),
+                child: const Icon(
+                  Icons.image_not_supported_outlined,
+                  color: Colors.grey,
+                ),
               ),
             ),
           ),
@@ -2363,8 +2635,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 controller: _emailController,
                 decoration: const InputDecoration(labelText: 'Email'),
                 keyboardType: TextInputType.emailAddress,
-                validator: (value) =>
-                    value!.isEmpty ? 'Email tidak valid' : null,
+                validator: (value) => value!.isEmpty || !value.contains('@')
+                    ? 'Email tidak valid'
+                    : null,
               ),
               const SizedBox(height: 32),
               SizedBox(

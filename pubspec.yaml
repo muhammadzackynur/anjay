@@ -61,6 +61,19 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+
+  assets:
+    - assets/fonts/ # Pastikan baris ini ada jika belum
+
+  fonts:
+    - family: Merriweather
+      fonts:
+        # File untuk gaya normal (tegak)
+        - asset: assets/fonts/Merriweather-Regular.ttf
+        
+        # File untuk gaya miring (italic)
+        - asset: assets/fonts/Merriweather-Italic.ttf
+          style: italic
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg
